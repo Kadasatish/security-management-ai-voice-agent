@@ -31,6 +31,16 @@ function base64UrlToJson(value) {
   return JSON.parse(new TextDecoder().decode(base64UrlToBytes(value)))
 }
 
+function bytesToBase64Url(bytes) {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function stringToBase64Url(value) {
+  return bytesToBase64Url(new TextEncoder().encode(value))
+}
+
 function pemToArrayBuffer(pem) {
   const base64 = pem
     .replace('-----BEGIN CERTIFICATE-----', '')
@@ -103,6 +113,67 @@ async function requireAuth(request, env) {
   return verifyFirebaseIdToken(authorization.slice(7).trim(), env.FIREBASE_PROJECT_ID)
 }
 
+async function createLiveKitToken({ apiKey, apiSecret, identity, roomName }) {
+  const now = Math.floor(Date.now() / 1000)
+  const header = stringToBase64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+  const payload = stringToBase64Url(JSON.stringify({
+    iss: apiKey,
+    sub: identity,
+    iat: now,
+    nbf: now,
+    exp: now + 60 * 30,
+    video: {
+      roomJoin: true,
+      room: roomName,
+      canPublish: true,
+      canSubscribe: true,
+    },
+  }))
+  const unsignedToken = `${header}.${payload}`
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(apiSecret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(unsignedToken),
+  )
+
+  return `${unsignedToken}.${bytesToBase64Url(new Uint8Array(signature))}`
+}
+
+async function handleLiveKitToken(request, env) {
+  const user = await requireAuth(request, env)
+  const body = await request.json().catch(() => null)
+  const roomName = typeof body?.roomName === 'string' ? body.roomName.trim() : ''
+
+  if (!roomName || roomName.length > 128) {
+    return json({ error: 'roomName is required and must be 128 characters or fewer.' }, 400, env)
+  }
+
+  if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
+    return json({ error: 'LiveKit backend is not configured yet.' }, 503, env)
+  }
+
+  const identity = `user_${user.sub}`
+  const participantToken = await createLiveKitToken({
+    apiKey: env.LIVEKIT_API_KEY,
+    apiSecret: env.LIVEKIT_API_SECRET,
+    identity,
+    roomName,
+  })
+
+  return json({
+    server_url: env.LIVEKIT_URL,
+    participant_token: participantToken,
+  }, 200, env)
+}
+
 async function handleAiPlan(request, env) {
   const user = await requireAuth(request, env)
   const body = await request.json().catch(() => null)
@@ -161,6 +232,10 @@ export default {
     try {
       if (request.method === 'GET' && url.pathname === '/health') {
         return json({ ok: true, service: 'security-ai-voice-agent-api' }, 200, env)
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/livekit/token') {
+        return await handleLiveKitToken(request, env)
       }
 
       if (request.method === 'POST' && url.pathname === '/api/ai/plan') {
