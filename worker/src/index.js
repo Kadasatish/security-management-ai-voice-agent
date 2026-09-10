@@ -1,3 +1,5 @@
+import { importX509, jwtVerify } from 'jose'
+
 const FIREBASE_CERTS_URL =
   'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
 
@@ -20,17 +22,6 @@ function json(data, status, env) {
   })
 }
 
-function base64UrlToBytes(value) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
-  const binary = atob(padded)
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0))
-}
-
-function base64UrlToJson(value) {
-  return JSON.parse(new TextDecoder().decode(base64UrlToBytes(value)))
-}
-
 function bytesToBase64Url(bytes) {
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
@@ -39,15 +30,6 @@ function bytesToBase64Url(bytes) {
 
 function stringToBase64Url(value) {
   return bytesToBase64Url(new TextEncoder().encode(value))
-}
-
-function pemToArrayBuffer(pem) {
-  const base64 = pem
-    .replace('-----BEGIN CERTIFICATE-----', '')
-    .replace('-----END CERTIFICATE-----', '')
-    .replace(/\s/g, '')
-  const binary = atob(base64)
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0)).buffer
 }
 
 async function getFirebaseCerts() {
@@ -64,46 +46,38 @@ async function getFirebaseCerts() {
 }
 
 async function verifyFirebaseIdToken(token, projectId) {
+  if (!token || typeof token !== 'string') throw new Error('Malformed Firebase ID token.')
+
   const parts = token.split('.')
   if (parts.length !== 3) throw new Error('Malformed Firebase ID token.')
 
-  const [encodedHeader, encodedPayload, encodedSignature] = parts
-  const header = base64UrlToJson(encodedHeader)
-  const payload = base64UrlToJson(encodedPayload)
+  const encodedHeader = parts[0]
+  let header
+  try {
+    const normalized = encodedHeader.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+    header = JSON.parse(atob(padded))
+  } catch {
+    throw new Error('Malformed Firebase ID token.')
+  }
 
   if (header.alg !== 'RS256' || !header.kid) throw new Error('Unsupported Firebase token.')
-  if (payload.aud !== projectId) throw new Error('Invalid Firebase token audience.')
-  if (payload.iss !== `https://securetoken.google.com/${projectId}`) {
-    throw new Error('Invalid Firebase token issuer.')
-  }
-  if (!payload.sub || typeof payload.sub !== 'string' || payload.sub.length > 128) {
-    throw new Error('Invalid Firebase token subject.')
-  }
-
-  const now = Math.floor(Date.now() / 1000)
-  if (typeof payload.exp !== 'number' || payload.exp <= now) throw new Error('Firebase token expired.')
-  if (typeof payload.iat !== 'number' || payload.iat > now + 60) throw new Error('Invalid Firebase token time.')
 
   const certs = await getFirebaseCerts()
   const cert = certs[header.kid]
   if (!cert) throw new Error('Unknown Firebase signing key.')
 
-  const key = await crypto.subtle.importKey(
-    'spki',
-    pemToArrayBuffer(cert),
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false,
-    ['verify'],
-  )
+  const key = await importX509(cert, 'RS256')
+  const { payload } = await jwtVerify(token, key, {
+    algorithms: ['RS256'],
+    audience: projectId,
+    issuer: `https://securetoken.google.com/${projectId}`,
+  })
 
-  const valid = await crypto.subtle.verify(
-    'RSASSA-PKCS1-v1_5',
-    key,
-    base64UrlToBytes(encodedSignature),
-    new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`),
-  )
+  if (!payload.sub || typeof payload.sub !== 'string' || payload.sub.length > 128) {
+    throw new Error('Invalid Firebase token subject.')
+  }
 
-  if (!valid) throw new Error('Invalid Firebase token signature.')
   return payload
 }
 
