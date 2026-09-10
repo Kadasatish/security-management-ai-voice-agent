@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VITE_LIVEKIT_URL: ${{ vars.VITE_LIVEKIT_URL }}
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
