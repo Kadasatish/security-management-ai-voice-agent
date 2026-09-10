@@ -151,16 +151,18 @@ async function handleLiveKitToken(request, env) {
   const user = await requireAuth(request, env)
   const body = await request.json().catch(() => null)
   const roomName = typeof body?.roomName === 'string' ? body.roomName.trim() : ''
+  const role = body?.role === 'guard' ? 'guard' : body?.role === 'manager' ? 'manager' : ''
 
   if (!roomName || roomName.length > 128) {
     return json({ error: 'roomName is required and must be 128 characters or fewer.' }, 400, env)
   }
+  if (!role) return json({ error: 'role must be manager or guard.' }, 400, env)
 
   if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
     return json({ error: 'LiveKit backend is not configured yet.' }, 503, env)
   }
 
-  const identity = `user_${user.sub}`
+  const identity = `user_${user.sub}_${role}`
   const participantToken = await createLiveKitToken({
     apiKey: env.LIVEKIT_API_KEY,
     apiSecret: env.LIVEKIT_API_SECRET,
