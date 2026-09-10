@@ -1,0 +1,40 @@
+name: Deploy LiveKit AI Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: LiveKit Agent operation
+        required: true
+        type: choice
+        options:
+          - create
+          - deploy
+        default: create
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  deploy-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or deploy LiveKit Agent
+        uses: livekit/deploy-action@v2.12.2
+        env:
+          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
+          SECRET_LIST: OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          OPERATION: ${{ inputs.operation }}
+          WORKING_DIRECTORY: agent
